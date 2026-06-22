@@ -19,7 +19,7 @@ from ciicerone.core.simulator import Simulator
 from ciicerone.llm.manager import LLMManager
 
 # Import API routers
-from ciicerone.api.routers import manuals_router, knowledge_router, feedback_router, threat_hunting_router
+from ciicerone.api.routers import manuals_router, knowledge_router, feedback_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -72,7 +72,8 @@ app.add_middleware(
 app.include_router(manuals_router, prefix="/api")
 app.include_router(knowledge_router, prefix="/api")
 app.include_router(feedback_router, prefix="/api")
-app.include_router(threat_hunting_router, prefix="/api")
+# TODO: Implement threat_hunting router and re-enable
+# app.include_router(threat_hunting_router, prefix="/api")
 
 
 # Pydantic models for API
