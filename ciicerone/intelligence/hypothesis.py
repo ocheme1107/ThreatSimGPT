@@ -634,3 +634,217 @@ class DetectabilityScorer:
             return 0.30
         return 0.50
 
+
+# ============================================================================
+# Hypothesis Validation Pipeline
+# ============================================================================
+
+
+@dataclass
+class RawHypothesis:
+    technique_id: str
+    tactic: str
+    description: str
+    source: HypothesisSource = HypothesisSource.MITRE_TECHNIQUE
+    context: Dict[str, Any] = field(default_factory=dict)
+
+
+class HypothesisValidationPipeline:
+    LIKELIHOOD_WEIGHT = 0.35
+    IMPACT_WEIGHT = 0.40
+    DETECTABILITY_WEIGHT = 0.25
+
+    PRIORITY_THRESHOLDS = [
+        (0.80, "critical"),
+        (0.65, "high"),
+        (0.45, "medium"),
+        (0.25, "low"),
+    ]
+
+    def __init__(
+        self,
+        mitre_engine: MITREATTACKEngine,
+        likelihood_scorer: Optional[LikelihoodScorer] = None,
+        impact_scorer: Optional[ImpactScorer] = None,
+        detectability_scorer: Optional[DetectabilityScorer] = None,
+    ):
+        self._mitre = mitre_engine
+        self._likelihood_scorer = likelihood_scorer or LikelihoodScorer(mitre_engine)
+        self._impact_scorer = impact_scorer or ImpactScorer(mitre_engine)
+        self._detectability_scorer = detectability_scorer or DetectabilityScorer(mitre_engine)
+        self._validation_history: Dict[str, HypothesisValidationResult] = {}
+
+    def validate(self, hypothesis: RawHypothesis) -> HypothesisValidationResult:
+        technique = self._mitre.get_technique(hypothesis.technique_id)
+        if not technique:
+            return HypothesisValidationResult(
+                hypothesis_id=str(uuid4()),
+                technique_id=hypothesis.technique_id,
+                technique_name=hypothesis.technique_id,
+                tactic=hypothesis.tactic,
+                description=hypothesis.description,
+                likelihood=LikelihoodScore(0.3, {}, "Technique not found in MITRE data"),
+                impact=ImpactScore(0.3, {}, "Technique not found in MITRE data"),
+                detectability=DetectabilityScore(0.5, {}, "Technique not found in MITRE data"),
+                overall_score=0.3,
+                priority="low",
+                recommendation="Validate technique ID and re-submit",
+                supporting_evidence=[],
+                related_groups=[],
+                related_software=[],
+                mitre_mitigations=[],
+                status=ValidationStatus.REJECTED,
+                validated_at=datetime.utcnow(),
+                source=hypothesis.source,
+                ttl_hours=24,
+            )
+
+        likelihood = self._likelihood_scorer.score(technique_id, hypothesis.tactic)
+        impact = self._impact_scorer.score(technique_id)
+        detectability = self._detectability_scorer.score(technique_id)
+
+        overall = (
+            likelihood.score * self.LIKELIHOOD_WEIGHT
+            + impact.score * self.IMPACT_WEIGHT
+            + detectability.score * self.DETECTABILITY_WEIGHT
+        )
+
+        priority = "low"
+        for threshold, label in self.PRIORITY_THRESHOLDS:
+            if overall >= threshold:
+                priority = label
+                break
+
+        recommendation = self._generate_recommendation(
+            likelihood, impact, detectability, overall, technique
+        )
+
+        groups = self._mitre.get_groups_using_technique(technique_id)
+        software = self._mitre.get_software_using_technique(technique_id)
+        mitigations = self._mitre.get_mitigations_for_technique(technique_id)
+
+        evidence = self._build_evidence(technique, likelihood, impact, detectability)
+
+        result = HypothesisValidationResult(
+            hypothesis_id=str(uuid4()),
+            technique_id=technique_id,
+            technique_name=technique.name if technique else technique_id,
+            tactic=hypothesis.tactic,
+            description=hypothesis.description,
+            likelihood=likelihood,
+            impact=impact,
+            detectability=detectability,
+            overall_score=overall,
+            priority=priority,
+            recommendation=recommendation,
+            supporting_evidence=evidence,
+            related_groups=[g.name for g in groups],
+            related_software=[s.name for s in software],
+            mitre_mitigations=[m.name for m in mitigations],
+            status=ValidationStatus.VALIDATED,
+            validated_at=datetime.utcnow(),
+            source=hypothesis.source,
+            ttl_hours=48,
+        )
+
+        self._validation_history[result.hypothesis_id] = result
+        return result
+
+    def validate_batch(
+        self,
+        hypotheses: List[RawHypothesis],
+        max_results: Optional[int] = None
+    ) -> List[HypothesisValidationResult]:
+        results = [self.validate(h) for h in hypotheses]
+        results.sort(key=lambda r: r.overall_score, reverse=True)
+        if max_results:
+            results = results[:max_results]
+        return results
+
+    def get_validation_history(
+        self,
+        min_score: float = 0.0,
+        status: Optional[ValidationStatus] = None,
+        limit: int = 50
+    ) -> List[HypothesisValidationResult]:
+        results = list(self._validation_history.values())
+        if min_score > 0.0:
+            results = [r for r in results if r.overall_score >= min_score]
+        if status:
+            results = [r for r in results if r.status == status]
+        results.sort(key=lambda r: r.overall_score, reverse=True)
+        return results[:limit]
+
+    def _generate_recommendation(
+        self,
+        likelihood: LikelihoodScore,
+        impact: ImpactScore,
+        detectability: DetectabilityScore,
+        overall: float,
+        technique: Optional[ATTACKTechnique],
+    ) -> str:
+        if overall >= 0.80:
+            return (
+                f"High-priority hunt: technique has {self._describe_score(likelihood.score)} likelihood, "
+                f"{self._describe_score(impact.score)} impact, and is "
+                f"{'readily detectable' if detectability.score >= 0.6 else 'challenging to detect'}. "
+                f"Begin immediate investigation with available detection rules."
+            )
+        elif overall >= 0.60:
+            return (
+                f"Medium-high priority: {self._describe_score(likelihood.score)} likelihood with "
+                f"{self._describe_score(impact.score)} impact. "
+                f"Review existing detection coverage before initiating hunt."
+            )
+        elif overall >= 0.40:
+            return (
+                f"Moderate priority: technique warrants periodic review. "
+                f"Likelihood is {self._describe_score(likelihood.score)} and impact is "
+                f"{self._describe_score(impact.score)}. Schedule for next hunt cycle."
+            )
+        else:
+            return (
+                f"Low priority: {self._describe_score(likelihood.score)} likelihood and "
+                f"{self._describe_score(impact.score)} impact. Log for trend analysis."
+            )
+
+    def _build_evidence(
+        self,
+        technique: Optional[ATTACKTechnique],
+        likelihood: LikelihoodScore,
+        impact: ImpactScore,
+        detectability: DetectabilityScore,
+    ) -> List[str]:
+        evidence = []
+        if technique:
+            evidence.append(f"MITRE ATT&CK technique: {technique.id} - {technique.name}")
+            evidence.append(f"Tactics: {', '.join(technique.tactics)}")
+            evidence.append(f"Platforms: {', '.join(technique.platforms)}")
+            if technique.data_sources:
+                evidence.append(f"Data sources: {', '.join(technique.data_sources)}")
+        evidence.append(f"Likelihood factors: {likelihood.reasoning}")
+        evidence.append(f"Impact factors: {impact.reasoning}")
+        evidence.append(f"Detectability factors: {detectability.reasoning}")
+        return evidence
+
+    def _describe_score(self, score: float) -> str:
+        if score >= 0.80:
+            return "very high"
+        elif score >= 0.60:
+            return "high"
+        elif score >= 0.40:
+            return "moderate"
+        elif score >= 0.20:
+            return "low"
+        return "very low"
+
+
+# ============================================================================
+# Convenience Factory
+# ============================================================================
+
+
+def create_hypothesis_validation_pipeline(
+    mitre_engine: MITREATTACKEngine,
+) -> HypothesisValidationPipeline:
+    return HypothesisValidationPipeline(mitre_engine)
