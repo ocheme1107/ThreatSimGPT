@@ -50,7 +50,7 @@ from .mitre_attack import (
     create_mitre_attack_engine,
 )
 
-# Hypothesis Validation Pipeline — Domain Models (Issue #234, Branch 1)
+# Hypothesis Validation Pipeline — Domain Models + Scoring Engines (Issue #234, Branch 1+2)
 from .hypothesis import (
     HypothesisStatus,
     LikelihoodFactor,
@@ -62,6 +62,9 @@ from .hypothesis import (
     ImpactScore,
     DetectabilityScore,
     HypothesisValidationResult,
+    LikelihoodScorer,
+    ImpactScorer,
+    DetectabilityScorer,
 )
 
 # Threat Hunting & CVE Intelligence
@@ -150,7 +153,7 @@ __all__ = [
     "PLATFORMS",
     "create_mitre_attack_engine",
 
-    # Hypothesis Validation Pipeline — Domain Models
+    # Hypothesis Validation Pipeline
     "HypothesisStatus",
     "LikelihoodFactor",
     "ImpactFactor",
@@ -161,6 +164,9 @@ __all__ = [
     "ImpactScore",
     "DetectabilityScore",
     "HypothesisValidationResult",
+    "LikelihoodScorer",
+    "ImpactScorer",
+    "DetectabilityScorer",
 
     # Threat Hunting & CVE Intelligence
     # TODO: Implement threat_hunting module and re-enable
